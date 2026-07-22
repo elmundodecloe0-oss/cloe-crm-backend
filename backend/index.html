@@ -263,7 +263,7 @@
 <div class="overlay" id="overlay-client">
   <div class="sheet sheet-wrap">
     <button class="close" onclick="closeSheet('overlay-client')">✕</button>
-    <h2>Nuevo cliente</h2>
+    <h2 id="client-form-title">Nuevo cliente</h2>
     <input type="hidden" id="client-id">
     <label>Nombre completo</label>
     <input type="text" id="client-name" placeholder="Ej. María Pérez">
@@ -272,6 +272,7 @@
     <label>Dirección / punto de entrega</label>
     <textarea id="client-address" placeholder="Referencia para la entrega"></textarea>
     <button class="btn btn-primary btn-block" style="margin-top:16px" onclick="saveClient()">Guardar cliente</button>
+    <button class="btn btn-danger btn-block" id="client-delete-btn" style="margin-top:10px; display:none" onclick="deleteClient()">🗑️ Eliminar cliente</button>
   </div>
 </div>
 
@@ -279,7 +280,7 @@
 <div class="overlay" id="overlay-order">
   <div class="sheet sheet-wrap">
     <button class="close" onclick="closeSheet('overlay-order')">✕</button>
-    <h2>Nuevo pedido</h2>
+    <h2 id="order-form-title">Nuevo pedido</h2>
     <label>Cliente</label>
     <select id="order-client"></select>
 
@@ -310,7 +311,7 @@
       </select>
     </div>
 
-    <button class="btn btn-primary btn-block" style="margin-top:16px" onclick="saveOrder()">Guardar pedido</button>
+    <button class="btn btn-primary btn-block" style="margin-top:16px" id="order-save-btn" onclick="saveOrder()">Guardar pedido</button>
   </div>
 </div>
 
@@ -318,8 +319,13 @@
 <div class="overlay" id="overlay-detail">
   <div class="sheet sheet-wrap">
     <button class="close" onclick="closeSheet('overlay-detail')">✕</button>
-    <h2 id="detail-name">Cliente</h2>
-    <p class="muted" id="detail-phone"></p>
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; padding-right:24px">
+      <div>
+        <h2 id="detail-name" style="margin:0">Cliente</h2>
+        <p class="muted" id="detail-phone" style="margin:2px 0 0"></p>
+      </div>
+      <button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="openClientEditForm(currentClientId)">✏️ Editar</button>
+    </div>
     <button class="btn btn-teal btn-sm" style="margin-top:6px" onclick="buildStatement(currentClientId)">🔔 Enviar estado de cuenta</button>
     <div class="summary-row" style="margin:12px 0 4px">
       <div class="summary-card" style="background:var(--sand-dim); border-color:var(--line)">
@@ -487,6 +493,7 @@ let pfItemRowCount = 0;
 let currentPfText = "", currentPfPhone = "", currentPfItems = [], currentPfClientName = "";
 let currentStText = "", currentStPhone = "";
 let pendingProformaId = null; // si se está convirtiendo una proforma en pedido
+let editingOrderId = null;    // si se está corrigiendo un pedido existente (no uno nuevo)
 
 const fmt = n => "C$" + (Number(n)||0).toLocaleString('es-NI',{minimumFractionDigits:2, maximumFractionDigits:2});
 const todayStr = () => new Date().toISOString().slice(0,10);
@@ -517,17 +524,24 @@ async function apiGet(path){
   }
 }
 async function apiPost(path, body){
+  return apiSend('POST', path, body, 'No se pudo guardar');
+}
+async function apiPut(path, body){
+  return apiSend('PUT', path, body, 'No se pudo guardar');
+}
+async function apiDelete(path){
+  return apiSend('DELETE', path, null, 'No se pudo eliminar');
+}
+async function apiSend(method, path, body, errPrefix){
   try{
-    const res = await fetch(API_BASE + path, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body)
-    });
+    const opts = { method, headers:{'Content-Type':'application/json'} };
+    if(body!==null && body!==undefined) opts.body = JSON.stringify(body);
+    const res = await fetch(API_BASE + path, opts);
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Error del servidor');
     return data;
   }catch(e){
-    showToast('⚠️ No se pudo guardar: '+e.message);
+    showToast('⚠️ '+errPrefix+': '+e.message);
     throw e;
   }
 }
@@ -580,13 +594,28 @@ document.getElementById('search').addEventListener('input', renderClientList);
 
 // ---------- Client form ----------
 function openClientForm(){
+  document.getElementById('client-form-title').textContent = 'Nuevo cliente';
   document.getElementById('client-id').value='';
   document.getElementById('client-name').value='';
   document.getElementById('client-phone').value='';
   document.getElementById('client-address').value='';
+  document.getElementById('client-delete-btn').style.display='none';
+  document.getElementById('overlay-client').classList.add('show');
+}
+// abre el mismo formulario pero precargado, para corregir un cliente mal escrito
+async function openClientEditForm(clientId){
+  const c = clients.find(x=>x.id===clientId) || (currentDetail && currentDetail.client);
+  if(!c) return;
+  document.getElementById('client-form-title').textContent = 'Editar cliente';
+  document.getElementById('client-id').value = c.id;
+  document.getElementById('client-name').value = c.name || '';
+  document.getElementById('client-phone').value = c.phone || '';
+  document.getElementById('client-address').value = c.address || '';
+  document.getElementById('client-delete-btn').style.display='block';
   document.getElementById('overlay-client').classList.add('show');
 }
 async function saveClient(){
+  const id = document.getElementById('client-id').value;
   const name = document.getElementById('client-name').value.trim();
   if(!name){ showToast('Escribe el nombre del cliente'); return; }
   const body = {
@@ -595,11 +624,32 @@ async function saveClient(){
     address: document.getElementById('client-address').value.trim()
   };
   try{
-    await apiPost('/clients', body);
+    if(id){
+      await apiPut('/clients?id='+id, body);
+    }else{
+      await apiPost('/clients', body);
+    }
   }catch(e){ return; }
   closeSheet('overlay-client');
   await loadAll();
+  if(id){ await openClientDetail(Number(id)); }
   showToast('Cliente guardado ✅');
+}
+// borra un cliente mal escrito o duplicado, junto con sus pedidos y pagos
+async function deleteClient(){
+  const id = document.getElementById('client-id').value;
+  if(!id) return;
+  const c = clients.find(x=>x.id===Number(id));
+  const nombre = c ? c.name : 'este cliente';
+  if(!confirm(`¿Eliminar a ${nombre}? Esto borrará también todos sus pedidos y abonos. Esta acción no se puede deshacer.`)) return;
+  try{
+    await apiDelete('/clients?id='+id);
+  }catch(e){ return; }
+  closeSheet('overlay-client');
+  closeSheet('overlay-detail');
+  currentClientId = null;
+  await loadAll();
+  showToast('Cliente eliminado 🗑️');
 }
 // crea el cliente si no existe (por nombre) y devuelve su id — usado por proformas
 async function findOrCreateClientByName(name){
@@ -613,7 +663,11 @@ async function findOrCreateClientByName(name){
 // ---------- Order form ----------
 function openOrderForm(){
   if(clients.length===0){ showToast('Primero agrega un cliente'); openClientForm(); return; }
+  editingOrderId = null;
+  document.getElementById('order-form-title').textContent = 'Nuevo pedido';
+  document.getElementById('order-save-btn').textContent = 'Guardar pedido';
   const sel = document.getElementById('order-client');
+  sel.disabled = false;
   sel.innerHTML = clients.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
   if(currentClientId) sel.value = currentClientId;
   document.getElementById('order-items').innerHTML='';
@@ -621,6 +675,34 @@ function openOrderForm(){
   addItemRow();
   document.getElementById('order-date').value = todayStr();
   setPayType('completo');
+  updateOrderTotal();
+  document.getElementById('overlay-order').classList.add('show');
+}
+// abre el mismo formulario de pedido pero precargado con sus artículos,
+// para corregir un precio, un producto duplicado o el tipo de pago
+function openOrderEditForm(orderId){
+  const order = currentDetail.orders.find(o=>o.id===orderId);
+  if(!order) return;
+  editingOrderId = orderId;
+  document.getElementById('order-form-title').textContent = 'Editar pedido';
+  document.getElementById('order-save-btn').textContent = 'Guardar cambios';
+  const sel = document.getElementById('order-client');
+  sel.innerHTML = clients.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  sel.value = order.client_id;
+  sel.disabled = true; // el pedido ya pertenece a este cliente
+
+  document.getElementById('order-items').innerHTML='';
+  itemRowCount=0;
+  (order.items && order.items.length ? order.items : [{}]).forEach(it=>{
+    addItemRow();
+    const row = document.getElementById('item'+itemRowCount);
+    if(it.description) row.querySelector('.item-desc').value = it.description;
+    if(it.quantity!=null) row.querySelector('.item-qty').value = it.quantity;
+    if(it.unit_price!=null) row.querySelector('.item-price').value = it.unit_price;
+  });
+
+  document.getElementById('order-date').value = (order.order_date||'').slice(0,10) || todayStr();
+  setPayType(payTypeFromApi(order.payment_type));
   updateOrderTotal();
   document.getElementById('overlay-order').classList.add('show');
 }
@@ -670,7 +752,22 @@ async function saveOrder(){
 
   let result;
   try{
-    if(pendingProformaId){
+    if(editingOrderId){
+      // Corrección de un pedido existente (precio, producto, tipo de pago)
+      const items = [];
+      document.querySelectorAll('#order-items .item-row').forEach(row=>{
+        const desc = row.querySelector('.item-desc').value.trim();
+        const qty = Number(row.querySelector('.item-qty').value)||0;
+        const price = Number(row.querySelector('.item-price').value)||0;
+        if(desc) items.push({description: desc, quantity: qty, unitPrice: price});
+      });
+      if(items.length===0){ showToast('Agrega al menos un artículo'); return; }
+      result = await apiPut('/orders?id='+editingOrderId, {
+        orderDate: date,
+        paymentType: payTypeToApi(paymentType),
+        items
+      });
+    } else if(pendingProformaId){
       // Conversión de una proforma existente en pedido real
       result = await apiPost('/proformas?action=convert', {
         proformaId: pendingProformaId,
@@ -694,17 +791,33 @@ async function saveOrder(){
     }
   }catch(e){ return; }
 
+  const wasEditing = !!editingOrderId;
   pendingProformaId = null;
+  editingOrderId = null;
+  document.getElementById('order-client').disabled = false;
   closeSheet('overlay-order');
   currentClientId = clientId;
   await loadAll();
-  showToast('Pedido guardado ✅');
+  showToast(wasEditing ? 'Pedido actualizado ✅' : 'Pedido guardado ✅');
   await openClientDetail(clientId);
 
   if(result && result.payment){
     const order = currentDetail.orders.find(o=>o.id===result.orderId);
     if(order) buildReceipt(result.payment, order, true);
   }
+}
+// borra un pedido duplicado o mal creado, junto con sus abonos
+async function deleteOrder(orderId){
+  const order = currentDetail.orders.find(o=>o.id===orderId);
+  if(!order) return;
+  if(!confirm('¿Eliminar este pedido? Si tiene abonos registrados, también se borrarán. Esta acción no se puede deshacer.')) return;
+  const clientId = order.client_id;
+  try{
+    await apiDelete('/orders?id='+orderId);
+  }catch(e){ return; }
+  await loadAll();
+  await openClientDetail(clientId);
+  showToast('Pedido eliminado 🗑️');
 }
 
 // ---------- Client detail ----------
@@ -735,6 +848,10 @@ async function openClientDetail(clientId){
         <span style="color:var(--red)">Debe ${fmt(saldo)}</span>
         <button class="btn btn-teal btn-sm" onclick="openPaymentForm(${o.id})">+ Abono</button>
       </div>` : `<div class="row2" style="margin-top:6px; color:var(--green)">✔ Saldado</div>`}
+      <div class="row2" style="margin-top:8px; gap:6px; justify-content:flex-end">
+        <button class="btn btn-ghost btn-sm" onclick="openOrderEditForm(${o.id})">✏️ Editar</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteOrder(${o.id})">🗑️ Borrar</button>
+      </div>
     </div>`;
   }).join('') || `<div class="empty" style="padding:20px 0">Sin pedidos aún.</div>`;
   document.getElementById('detail-orders').innerHTML = ordersHtml;
